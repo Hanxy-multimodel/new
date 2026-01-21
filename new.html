@@ -1,0 +1,529 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>艺术级粉色流光圣诞树 - 稳定手势版</title>
+    <script src="https://testingcf.jsdelivr.net/npm/three@0.145.0/build/three.min.js"></script>
+    <script src="https://testingcf.jsdelivr.net/npm/three@0.145.0/examples/jsm/postprocessing/EffectComposer.js"></script>
+    <script src="https://testingcf.jsdelivr.net/npm/three@0.145.0/examples/jsm/postprocessing/RenderPass.js"></script>
+    <script src="https://testingcf.jsdelivr.net/npm/three@0.145.0/examples/jsm/postprocessing/ShaderPass.js"></script>
+    <script src="https://testingcf.jsdelivr.net/npm/three@0.145.0/examples/jsm/shaders/CopyShader.js"></script>
+    <script src="https://testingcf.jsdelivr.net/npm/three@0.145.0/examples/jsm/shaders/LuminosityHighPassShader.js"></script>
+    <script src="https://testingcf.jsdelivr.net/npm/three@0.145.0/examples/jsm/postprocessing/UnrealBloomPass.js"></script>
+    
+    <script src="https://testingcf.jsdelivr.net/npm/@mediapipe/hands/hands.js"></script>
+    <script src="https://testingcf.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body { margin: 0; overflow: hidden; background: #050105; color: #fff; font-family: 'Segoe UI', sans-serif; }
+        #video-container { display: none; }
+        #ui-overlay { position: absolute; top: 40px; left: 40px; pointer-events: none; z-index: 60; }
+        #gesture-control {
+            position: absolute; top: 40px; right: 40px; z-index: 100;
+            display: flex; align-items: center; gap: 12px;
+            background: rgba(20, 0, 10, 0.8);
+            backdrop-filter: blur(15px);
+            padding: 10px 20px; border-radius: 50px;
+            border: 1px solid rgba(255, 182, 193, 0.3);
+            pointer-events: auto;
+        }
+        .switch { position: relative; display: inline-block; width: 44px; height: 22px; }
+        .switch input { opacity: 0; width: 0; height: 0; }
+        .slider {
+            position: absolute; cursor: pointer; inset: 0;
+            background-color: rgba(255, 255, 255, 0.1);
+            transition: .4s; border-radius: 34px;
+        }
+        .slider:before {
+            position: absolute; content: ""; height: 16px; width: 16px; left: 3px; bottom: 3px;
+            background-color: white; transition: .4s; border-radius: 50%;
+        }
+        input:checked + .slider { background-color: #ff69b4; }
+        input:checked + .slider:before { transform: translateX(22px); }
+        .glass {
+            background: rgba(20, 0, 10, 0.6);
+            backdrop-filter: blur(20px);
+            padding: 25px; border-radius: 15px;
+            border: 1px solid rgba(255, 192, 203, 0.1);
+        }
+        #loading-screen {
+            position: fixed; inset: 0; background: #050105;
+            display: flex; flex-direction: column; align-items: center; justify-content: center; z-index: 1000;
+        }
+        #upload-btn-container {
+            position: absolute; bottom: 40px; left: 50%; transform: translateX(-50%);
+            z-index: 70; display: flex; flex-direction: column; align-items: center; gap: 10px;
+        }
+        .upload-btn {
+            background: rgba(255, 182, 193, 0.15);
+            border: 1px solid rgba(255, 182, 193, 0.3);
+            padding: 10px 25px; border-radius: 30px;
+            color: #ffc0cb; text-transform: uppercase; letter-spacing: 2px; font-size: 11px;
+            cursor: pointer; transition: all 0.3s ease; backdrop-filter: blur(10px);
+        }
+        .upload-btn:hover { background: rgba(255, 105, 180, 0.3); }
+    </style>
+</head>
+<body>
+
+<div id="loading-screen">
+    <div class="w-10 h-10 border-t-2 border-pink-500 rounded-full animate-spin mb-4"></div>
+    <p class="text-[10px] tracking-[0.5em] text-pink-300 uppercase">正在优化防抖算法...</p>
+</div>
+
+<div id="gesture-control">
+    <span class="text-[10px] text-pink-200 uppercase tracking-widest font-medium">手势互动</span>
+    <label class="switch">
+        <input type="checkbox" id="gesture-toggle" onchange="toggleGesture(this.checked)">
+        <span class="slider"></span>
+    </label>
+</div>
+
+<div id="ui-overlay">
+    <div class="glass">
+        <h1 class="text-2xl font-thin mb-1 tracking-widest text-pink-300">AETHER TREE</h1>
+        <p class="text-[8px] text-pink-200/50 uppercase tracking-[0.4em] mb-6">Fidelity Focused Interaction</p>
+        <div id="instruction-panel" class="space-y-4 text-[10px] text-white/70 tracking-widest opacity-30">
+            <div class="flex items-center gap-4"><span>✊</span> <span>汇聚 GATHER</span></div>
+            <div class="flex items-center gap-4"><span>🖐️</span> <span>散开 SCATTER</span></div>
+            <div class="flex items-center gap-4"><span>👌</span> <span>聚焦 PINCH FOCUS</span></div>
+        </div>
+    </div>
+</div>
+
+<div id="upload-btn-container">
+    <button class="upload-btn" onclick="document.getElementById('file-input').click()">上传记忆碎片</button>
+    <input type="file" id="file-input" hidden accept="image/*" onchange="handleUpload(event)">
+</div>
+
+<div id="video-container"><video id="input-video" playsinline></video></div>
+
+<script>
+let scene, camera, renderer, composer, treePoints, fiberPoints, photoGroup;
+let photoMeshes = [];
+let clock = new THREE.Clock();
+let state = 'CONE', handX = 0, smoothHandX = 0, isPinching = false, lastClosestIdx = -1;
+let treeExpansion = 0; 
+let gestureEnabled = false;
+let lastStableGesture = 'IDLE', currentGesture = 'IDLE', gestureConfirmCount = 0;
+const GESTURE_CONFIRM_FRAMES = 5; // 手势持续5帧才确认
+let cameraInstance = null;
+let handsDetector = null;
+
+const BLOOM_LAYER = 1;
+const GLOBAL_OFFSET_Y = 5;
+const NEBULA_COUNT = 15000;
+const FIBER_COUNT = 2000; 
+
+function getThreeComponent(name) {
+    if (THREE[name]) return THREE[name];
+    if (window[name]) return window[name];
+    return null;
+}
+
+async function init() {
+    setupScene();
+    setupPostProcessing();
+    createBackgroundStars();
+    createTreeSystem();
+    createPhotos();
+    setupMediaPipe();
+    animate();
+    
+    document.getElementById('loading-screen').style.opacity = '0';
+    setTimeout(() => document.getElementById('loading-screen')?.remove(), 1000);
+}
+
+function setupScene() {
+    scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x050105);
+    camera = new THREE.PerspectiveCamera(35, window.innerWidth / window.innerHeight, 0.1, 1000);
+    camera.position.set(0, 8, 80); 
+
+    renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    renderer.toneMapping = THREE.NoToneMapping; 
+    document.body.appendChild(renderer.domElement);
+
+    const ambientLight = new THREE.AmbientLight(0xffffff, 1.0);
+    scene.add(ambientLight);
+
+    window.addEventListener('resize', () => {
+        camera.aspect = window.innerWidth / window.innerHeight;
+        camera.updateProjectionMatrix();
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        if (composer) composer.setSize(window.innerWidth, window.innerHeight);
+    });
+}
+
+function setupPostProcessing() {
+    const RenderPass = getThreeComponent('RenderPass');
+    const UnrealBloomPass = getThreeComponent('UnrealBloomPass');
+    const EffectComposer = getThreeComponent('EffectComposer');
+
+    if (!RenderPass || !UnrealBloomPass || !EffectComposer) return;
+
+    composer = new EffectComposer(renderer);
+    const renderPass = new RenderPass(scene, camera);
+    composer.addPass(renderPass);
+    
+    const bloomPass = new UnrealBloomPass(
+        new THREE.Vector2(window.innerWidth, window.innerHeight), 
+        1.5, 0.4, 0.85
+    );
+    composer.addPass(bloomPass);
+}
+
+function createBackgroundStars() {
+    const geo = new THREE.BufferGeometry();
+    const pos = new Float32Array(3000 * 3);
+    for (let i = 0; i < 3000; i++) {
+        pos[i*3] = (Math.random() - 0.5) * 250;
+        pos[i*3+1] = (Math.random() - 0.5) * 250 + GLOBAL_OFFSET_Y;
+        pos[i*3+2] = (Math.random() - 0.5) * 250;
+    }
+    geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+    const stars = new THREE.Points(geo, new THREE.PointsMaterial({
+        size: 0.12, color: 0xffb6c1, transparent: true, opacity: 0.3
+    }));
+    stars.layers.enable(BLOOM_LAYER);
+    scene.add(stars);
+}
+
+function getTreeRadius(ratio) {
+    const reverseRatio = 1.0 - ratio;
+    const baseRadius = reverseRatio * 13;
+    const waves = Math.pow(Math.abs(Math.sin(ratio * Math.PI * 5)), 0.4);
+    return baseRadius * (0.6 + 0.4 * waves);
+}
+
+function createTreeSystem() {
+    const nebulaGeo = new THREE.BufferGeometry();
+    const nebPos = new Float32Array(NEBULA_COUNT * 3);
+    const nebColors = new Float32Array(NEBULA_COUNT * 3);
+    const nebMeta = new Float32Array(NEBULA_COUNT * 3); 
+    const nebSizes = new Float32Array(NEBULA_COUNT);   
+
+    for (let i = 0; i < NEBULA_COUNT; i++) {
+        const i3 = i * 3;
+        const ratio = i / NEBULA_COUNT;
+        const y = ratio * 30 - 15 + GLOBAL_OFFSET_Y;
+        const currentMaxRadius = getTreeRadius(ratio);
+        const angle = Math.random() * Math.PI * 2;
+        const dist = (Math.pow(Math.random(), 0.7)) * currentMaxRadius;
+        
+        nebPos[i3] = Math.cos(angle) * dist;
+        nebPos[i3 + 1] = y;
+        nebPos[i3 + 2] = Math.sin(angle) * dist;
+
+        const u = Math.random(), v = Math.random();
+        const theta = 2 * Math.PI * u, phi = Math.acos(2 * v - 1);
+        nebMeta[i3] = Math.sin(phi) * Math.cos(theta);
+        nebMeta[i3+1] = Math.sin(phi) * Math.sin(theta);
+        nebMeta[i3+2] = Math.cos(phi);
+
+        const color = new THREE.Color().setHSL(0.93, 0.8, 0.4 + Math.random() * 0.4);
+        nebColors[i3] = color.r; nebColors[i3+1] = color.g; nebColors[i3+2] = color.b;
+        nebSizes[i] = Math.random() * 0.5 + 0.2;
+    }
+    nebulaGeo.setAttribute('position', new THREE.BufferAttribute(nebPos, 3));
+    nebulaGeo.setAttribute('color', new THREE.BufferAttribute(nebColors, 3));
+    nebulaGeo.setAttribute('size', new THREE.BufferAttribute(nebSizes, 1)); 
+    nebulaGeo.userData = { originals: new Float32Array(nebPos), meta: nebMeta };
+    
+    const shaderMat = new THREE.ShaderMaterial({
+        transparent: true, blending: THREE.AdditiveBlending, depthWrite: false, vertexColors: true,
+        uniforms: { uTime: { value: 0 }, uExpansion: { value: 0 } },
+        vertexShader: `
+            attribute float size; varying vec3 vColor; uniform float uExpansion;
+            void main() {
+                vColor = color; 
+                vColor += uExpansion * 0.3;
+                vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
+                gl_PointSize = size * (450.0 / -mvPosition.z) * (1.0 + uExpansion * 2.5);
+                gl_Position = projectionMatrix * mvPosition;
+            }
+        `,
+        fragmentShader: `
+            varying vec3 vColor;
+            void main() {
+                float d = length(gl_PointCoord - vec2(0.5));
+                if (d > 0.5) discard;
+                float strength = pow(1.0 - (d * 2.0), 2.0);
+                gl_FragColor = vec4(vColor * 1.5, strength);
+            }
+        `
+    });
+    treePoints = new THREE.Points(nebulaGeo, shaderMat);
+    treePoints.layers.enable(BLOOM_LAYER);
+    scene.add(treePoints);
+
+    const fiberGeo = new THREE.BufferGeometry();
+    const fibPos = new Float32Array(FIBER_COUNT * 3);
+    const fibColors = new Float32Array(FIBER_COUNT * 3);
+    for (let i = 0; i < FIBER_COUNT; i++) {
+        const i3 = i * 3;
+        const ratio = i / FIBER_COUNT;
+        const angle = ratio * Math.PI * 12; 
+        const radius = getTreeRadius(ratio) + 0.3; 
+        fibPos[i3] = Math.cos(angle) * radius;
+        fibPos[i3 + 1] = ratio * 30 - 15 + GLOBAL_OFFSET_Y;
+        fibPos[i3 + 2] = Math.sin(angle) * radius;
+        const color = new THREE.Color(0xffffff).lerp(new THREE.Color(0xff69b4), ratio);
+        fibColors[i3] = color.r; fibColors[i3+1] = color.g; fibColors[i3+2] = color.b;
+    }
+    fiberGeo.setAttribute('position', new THREE.BufferAttribute(fibPos, 3));
+    fiberGeo.setAttribute('color', new THREE.BufferAttribute(fibColors, 3));
+    fiberGeo.userData = { originals: new Float32Array(fibPos) };
+    fiberPoints = new THREE.Points(fiberGeo, new THREE.PointsMaterial({
+        size: 0.25, vertexColors: true, transparent: true, opacity: 0.8, blending: THREE.AdditiveBlending, depthWrite: false
+    }));
+    fiberPoints.layers.enable(BLOOM_LAYER);
+    scene.add(fiberPoints);
+}
+
+function createPhotos() {
+    photoGroup = new THREE.Group();
+    scene.add(photoGroup);
+    const imgs = [
+        'https://images.unsplash.com/photo-1543852786-1cf6624b9987?w=600', 
+        'https://images.unsplash.com/photo-1518199266791-5375a83190b7?w=600',
+        'https://images.unsplash.com/photo-1513297845512-1ab8a77cd3e9?w=600'
+    ];
+    for (let i = 0; i < 8; i++) addPhotoDecoration(imgs[i % 3], i, 8);
+}
+
+function addPhotoDecoration(url, index, total) {
+    const loader = new THREE.TextureLoader();
+    const container = new THREE.Group();
+    
+    const frame = new THREE.Mesh(
+        new THREE.PlaneGeometry(2.6, 3.4), 
+        new THREE.MeshBasicMaterial({ color: 0x000000, transparent: true, opacity: 0.4, side: THREE.DoubleSide })
+    );
+    
+    const texture = loader.load(url);
+    texture.encoding = THREE.sRGBEncoding; 
+    const photo = new THREE.Mesh(
+        new THREE.PlaneGeometry(2.4, 3.2), 
+        new THREE.MeshBasicMaterial({ map: texture, side: THREE.DoubleSide, transparent: true })
+    );
+    photo.position.z = 0.01;
+    container.add(frame, photo);
+    container.layers.set(0);
+    
+    const hRatio = 0.15 + (index / total) * 0.7;
+    const angle = (index / total) * Math.PI * 2;
+    const radius = getTreeRadius(hRatio) + 4.5;
+    const yPos = hRatio * 30 - 15 + GLOBAL_OFFSET_Y;
+    
+    container.userData = { 
+        conePos: new THREE.Vector3(Math.cos(angle) * radius, yPos, Math.sin(angle) * radius),
+        ringPos: new THREE.Vector3(Math.cos(angle) * 32, GLOBAL_OFFSET_Y, Math.sin(angle) * 32),
+        index: index
+    };
+    container.position.copy(container.userData.conePos);
+    photoGroup.add(container);
+    photoMeshes.push(container);
+}
+
+function handleUpload(event) {
+    const file = event.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (e) => addPhotoDecoration(e.target.result, photoMeshes.length, photoMeshes.length + 1);
+    reader.readAsDataURL(file);
+}
+
+function setupMediaPipe() {
+    handsDetector = new Hands({ locateFile: (file) => `https://testingcf.jsdelivr.net/npm/@mediapipe/hands@0.4.1646424915/${file}` });
+    handsDetector.setOptions({ maxNumHands: 1, modelComplexity: 1, minDetectionConfidence: 0.7, minTrackingConfidence: 0.7 });
+    
+    handsDetector.onResults(results => {
+        if (!results.multiHandLandmarks?.length) { 
+            currentGesture = 'IDLE';
+            gestureConfirmCount = 0;
+        } else {
+        const lm = results.multiHandLandmarks[0];
+        const dist = (id1, id2) => Math.hypot(lm[id1].x - lm[id2].x, lm[id1].y - lm[id2].y);
+        const wristToPalm = dist(0, 9);
+        const fingerDistances = [8, 12, 16, 20].map(id => dist(id, 0));
+            const foldedCount = fingerDistances.filter(d => d < wristToPalm * 1.0).length;
+        const indexThumbDist = dist(8, 4);
+            handX = (lm[9].x - 0.5) * 12;
+
+            let rawGestureThisFrame = 'IDLE';
+            if (foldedCount >= 3) { // 1. 优先判断握拳，最明确
+                rawGestureThisFrame = 'FIST';
+            } else if (indexThumbDist < wristToPalm * 0.3 && foldedCount <= 1) { // 2. 捏合必须是其他手指展开
+                rawGestureThisFrame = 'PINCH';
+            } else if (foldedCount <= 1) { // 3. 其他情况下的展开手势
+                rawGestureThisFrame = 'OPEN';
+            }
+
+            if (rawGestureThisFrame === currentGesture) {
+                gestureConfirmCount++;
+            } else {
+                currentGesture = rawGestureThisFrame;
+                gestureConfirmCount = 0;
+            }
+        }
+
+        if (gestureConfirmCount === GESTURE_CONFIRM_FRAMES) {
+            lastStableGesture = currentGesture;
+
+            if (lastStableGesture === 'PINCH') {
+            if (!isPinching) {
+                isPinching = true;
+                updateClosestPhoto(); 
+            }
+        } else { 
+            isPinching = false; 
+                if (lastStableGesture === 'FIST') {
+                    state = 'CONE';
+                } else if (lastStableGesture === 'OPEN') {
+                    state = 'RING';
+                }
+            }
+        }
+    });
+}
+
+/**
+ * 核心修复：高权重深度判定 + 距离锁定
+ */
+function updateClosestPhoto() {
+    let bestScore = -Infinity;
+    let closestIdx = -1;
+
+    photoMeshes.forEach((mesh, idx) => {
+        const worldPos = new THREE.Vector3();
+        mesh.getWorldPosition(worldPos);
+        
+        const cameraSpacePos = worldPos.clone().applyMatrix4(camera.matrixWorldInverse);
+        
+        // 1. 深度权重：处于圆环正前方（离相机更近，Z值更靠近 -0）的物体优先级极高
+        // 相机在 (0,8,80)，向前看。物体在 Z 越小的位置分越高
+        // 我们用 -cameraSpacePos.z 来表示距离，值越小说明越近
+        const realDepth = -cameraSpacePos.z;
+        const depthScore = Math.pow(1.0 / Math.max(0.1, realDepth), 3.0); // 使用立方指数拉开差距
+
+        // 2. 中心权重：屏幕中心对齐
+        const centerDist = Math.hypot(cameraSpacePos.x, cameraSpacePos.y);
+        const centerScore = 1.0 / (1.0 + centerDist);
+
+        // 综合评分：深度权重占比极大，防止选中圆环背面的图
+        const totalScore = centerScore;
+
+        if (totalScore > bestScore) {
+            bestScore = totalScore;
+            closestIdx = idx;
+        }
+    });
+    
+    lastClosestIdx = closestIdx;
+}
+
+async function toggleGesture(enabled) {
+    gestureEnabled = enabled;
+    const video = document.getElementById('input-video');
+    const instructionPanel = document.getElementById('instruction-panel');
+    if (enabled) {
+        instructionPanel.style.opacity = "1";
+        if (!cameraInstance) {
+            cameraInstance = new Camera(video, {
+                onFrame: async () => { if (gestureEnabled) await handsDetector.send({image: video}); },
+                width: 640, height: 480
+            });
+        }
+        await cameraInstance.start();
+    } else {
+        instructionPanel.style.opacity = "0.3";
+        if (cameraInstance) await cameraInstance.stop();
+        state = 'CONE'; isPinching = false; handX = 0;
+    }
+}
+
+function animate() {
+    requestAnimationFrame(animate);
+    const t = clock.getElapsedTime();
+    smoothHandX += (handX - smoothHandX) * 0.1;
+    
+    const targetExpansion = (state === 'RING' && !isPinching) ? 1.0 : 0.0;
+    treeExpansion += (targetExpansion - treeExpansion) * 0.05; 
+
+    if (treePoints) {
+        treePoints.material.uniforms.uExpansion.value = treeExpansion;
+        treePoints.material.uniforms.uTime.value = t;
+        const nebPos = treePoints.geometry.attributes.position;
+        const nebOrig = treePoints.geometry.userData.originals;
+        const nebMeta = treePoints.geometry.userData.meta;
+        for (let i = 0; i < NEBULA_COUNT; i++) {
+            const i3 = i * 3, drift = Math.sin(t * 0.4 + i * 0.05) * 0.08, burst = 45 + (i % 12) * 2; 
+            nebPos.array[i3] = THREE.MathUtils.lerp(nebOrig[i3] + drift, nebMeta[i3] * burst, treeExpansion);
+            nebPos.array[i3+1] = THREE.MathUtils.lerp(nebOrig[i3+1] + drift, nebMeta[i3+1] * burst + GLOBAL_OFFSET_Y, treeExpansion);
+            nebPos.array[i3+2] = THREE.MathUtils.lerp(nebOrig[i3+2] + drift, nebMeta[i3+2] * burst, treeExpansion);
+        }
+        nebPos.needsUpdate = true;
+        treePoints.rotation.y = smoothHandX * -0.15 + t * 0.1;
+    }
+
+    if (fiberPoints) {
+        const fibPos = fiberPoints.geometry.attributes.position, fibOrig = fiberPoints.geometry.userData.originals;
+        for (let i = 0; i < FIBER_COUNT; i++) {
+            const i3 = i * 3, exp = 1.0 + treeExpansion * 5.0;
+            fibPos.array[i3] = fibOrig[i3] * exp;
+            fibPos.array[i3+1] = fibOrig[i3+1] + (treeExpansion * (fibOrig[i3+1] - GLOBAL_OFFSET_Y) * 0.35);
+            fibPos.array[i3+2] = fibOrig[i3+2] * exp;
+        }
+        fibPos.needsUpdate = true;
+        fiberPoints.rotation.y = t * 0.12 + smoothHandX * -0.15;
+    }
+
+    photoMeshes.forEach((m, i) => {
+        const frame = m.children[0];
+        const photo = m.children[1];
+
+        if (isPinching && i === lastClosestIdx) {
+            // 锁定逻辑：选中的照片平滑飞向中心
+            const targetCenter = photoGroup.worldToLocal(new THREE.Vector3(0, 1.5 + GLOBAL_OFFSET_Y, 45));
+            m.position.lerp(targetCenter, 0.15);
+            m.scale.lerp(new THREE.Vector3(7.5, 7.5, 7.5), 0.15); 
+            m.lookAt(camera.position);
+            
+            if(frame.material) frame.material.opacity = THREE.MathUtils.lerp(frame.material.opacity, 0, 0.2); 
+            if(photo.material) photo.material.opacity = THREE.MathUtils.lerp(photo.material.opacity, 1, 0.2);
+        } else {
+            // 非选中物体的回归逻辑
+            const target = (state === 'CONE' || treeExpansion < 0.5) ? m.userData.conePos : m.userData.ringPos;
+            m.position.lerp(target, 0.08);
+            m.scale.lerp(new THREE.Vector3(1, 1, 1), 0.1);
+            m.lookAt(new THREE.Vector3(0, m.position.y, 0)); 
+            
+            // 捏合时背景透明度大幅度降低，防止干扰
+            const targetFrameOpacity = isPinching ? 0.0 : 0.4;
+            const targetPhotoOpacity = isPinching ? 0.05 : 1.0;
+            
+            if(frame.material) frame.material.opacity = THREE.MathUtils.lerp(frame.material.opacity, targetFrameOpacity, 0.1);
+            if(photo.material) photo.material.opacity = THREE.MathUtils.lerp(photo.material.opacity, targetPhotoOpacity, 0.1);
+        }
+    });
+
+    // 旋转控制：捏合时锁定旋转，增强稳定性
+    if (!isPinching) {
+        photoGroup.rotation.y = smoothHandX * -1.0 + (gestureEnabled ? 0 : t * 0.15);
+    }
+    
+    if (composer) {
+        composer.render();
+    } else {
+        renderer.render(scene, camera);
+    }
+}
+
+window.addEventListener('load', init);
+</script>
+</body>
+</html>
